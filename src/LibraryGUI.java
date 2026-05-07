@@ -1,8 +1,22 @@
-import java.awt.*;
-import java.sql.*;
+import java.awt.BorderLayout;
+import java.awt.GridLayout;
+import java.sql.Connection;
+import java.sql.Date;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
-import javax.swing.*;
+
+import javax.swing.BorderFactory;
+import javax.swing.JButton;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTable;
+import javax.swing.JTextField;
+import javax.swing.UIManager;
 import javax.swing.table.DefaultTableModel;
 
 public class LibraryGUI extends JFrame {
@@ -17,7 +31,7 @@ public class LibraryGUI extends JFrame {
         } catch (Exception e) {}
 
         setTitle("Library Management System");
-        setSize(800, 500);
+        setSize(900, 500);
         setLayout(new BorderLayout(10, 10));
 
         // ===== TOP PANEL =====
@@ -49,6 +63,7 @@ public class LibraryGUI extends JFrame {
         JButton issueBtn = new JButton("Issue");
         JButton returnBtn = new JButton("Return");
         JButton searchBtn = new JButton("Search");
+        JButton userBtn = new JButton("Users");
 
         searchField = new JTextField();
 
@@ -62,9 +77,10 @@ public class LibraryGUI extends JFrame {
         panel.add(returnBtn);
         panel.add(searchField);
         panel.add(searchBtn);
+        panel.add(userBtn);
 
-        // ===== TABLE =====
-        String[] cols = {"ID", "Title", "Author", "Available", "Issued To"};
+        // ===== TABLE (UPDATED) =====
+        String[] cols = {"ID", "Title", "Author", "Available", "Issued To", "Due Date"};
         model = new DefaultTableModel(cols, 0);
 
         JTable table = new JTable(model);
@@ -81,11 +97,12 @@ public class LibraryGUI extends JFrame {
         searchBtn.addActionListener(e -> searchBook());
         issueBtn.addActionListener(e -> issueBook());
         returnBtn.addActionListener(e -> returnBook());
-
-        searchBook();
-
+        userBtn.addActionListener(e -> new UserGUI());
+        
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setVisible(true);
+
+        searchBook();
     }
 
     // ===== ADD =====
@@ -151,7 +168,7 @@ public class LibraryGUI extends JFrame {
         }
     }
 
-    // ===== SEARCH (CLEAN FIX) =====
+    // ===== SEARCH (UPDATED WITH DUE DATE) =====
     void searchBook() {
         try (Connection con = DBConnection.getConnection()) {
 
@@ -163,13 +180,13 @@ public class LibraryGUI extends JFrame {
 
             if (text.isEmpty()) {
                 ps = con.prepareStatement(
-                    "SELECT b.id, b.title, b.author, b.available, t.user_id " +
+                    "SELECT b.id, b.title, b.author, b.available, t.user_id, t.due_date " +
                     "FROM books b LEFT JOIN transactions t " +
                     "ON b.id = t.book_id AND t.return_date IS NULL"
                 );
             } else {
                 ps = con.prepareStatement(
-                    "SELECT b.id, b.title, b.author, b.available, t.user_id " +
+                    "SELECT b.id, b.title, b.author, b.available, t.user_id, t.due_date " +
                     "FROM books b LEFT JOIN transactions t " +
                     "ON b.id = t.book_id AND t.return_date IS NULL " +
                     "WHERE b.id = ? OR b.title LIKE ? OR b.author LIKE ?"
@@ -189,13 +206,15 @@ public class LibraryGUI extends JFrame {
             while (rs.next()) {
 
                 Integer uid = rs.getObject("user_id") != null ? rs.getInt("user_id") : null;
+                Date due = rs.getDate("due_date");
 
                 model.addRow(new Object[]{
                     rs.getInt("id"),
                     rs.getString("title"),
                     rs.getString("author"),
                     rs.getBoolean("available"),
-                    uid == null ? "Available" : "User " + uid
+                    uid == null ? "Available" : "User " + uid,
+                    due == null ? "-" : due.toString()
                 });
             }
 
@@ -205,50 +224,72 @@ public class LibraryGUI extends JFrame {
     }
 
     // ===== ISSUE =====
-    void issueBook() {
-        try (Connection con = DBConnection.getConnection()) {
+   void issueBook() {
+    try (Connection con = DBConnection.getConnection()) {
 
-            int bookId = Integer.parseInt(idField.getText());
-            int userId = Integer.parseInt(userField.getText());
+        int bookId = Integer.parseInt(idField.getText());
+        int userId = Integer.parseInt(userField.getText());
 
-            PreparedStatement check = con.prepareStatement(
-                "SELECT available FROM books WHERE id=?"
-            );
-            check.setInt(1, bookId);
-            ResultSet rs = check.executeQuery();
+        // ===== CHECK USER EXISTS =====
+        PreparedStatement userCheck = con.prepareStatement(
+            "SELECT * FROM users WHERE user_id=?"
+        );
 
-            if (rs.next() && rs.getBoolean("available")) {
+        userCheck.setInt(1, userId);
 
-                LocalDate today = LocalDate.now();
+        ResultSet userRs = userCheck.executeQuery();
 
-                PreparedStatement ps = con.prepareStatement(
-                    "INSERT INTO transactions (book_id, user_id, issue_date, due_date) VALUES (?, ?, ?, ?)"
-                );
+        if (!userRs.next()) {
 
-                ps.setInt(1, bookId);
-                ps.setInt(2, userId);
-                ps.setDate(3, Date.valueOf(today));
-                ps.setDate(4, Date.valueOf(today.plusDays(7)));
-
-                ps.executeUpdate();
-
-                PreparedStatement upd = con.prepareStatement(
-                    "UPDATE books SET available=false WHERE id=?"
-                );
-                upd.setInt(1, bookId);
-                upd.executeUpdate();
-
-                searchBook();
-                JOptionPane.showMessageDialog(this, "Issued!");
-
-            } else {
-                JOptionPane.showMessageDialog(this, "Not available!");
-            }
-
-        } catch (Exception e) {
-            JOptionPane.showMessageDialog(this, "Issue failed!");
+            JOptionPane.showMessageDialog(this, "User not registered!");
+            return;
         }
+
+        // ===== CHECK BOOK AVAILABILITY =====
+        PreparedStatement check = con.prepareStatement(
+            "SELECT available FROM books WHERE id=?"
+        );
+
+        check.setInt(1, bookId);
+
+        ResultSet rs = check.executeQuery();
+
+        if (rs.next() && rs.getBoolean("available")) {
+
+            LocalDate today = LocalDate.now();
+
+            PreparedStatement ps = con.prepareStatement(
+                "INSERT INTO transactions (book_id, user_id, issue_date, due_date) VALUES (?, ?, ?, ?)"
+            );
+
+            ps.setInt(1, bookId);
+            ps.setInt(2, userId);
+            ps.setDate(3, Date.valueOf(today));
+            ps.setDate(4, Date.valueOf(today.plusDays(7)));
+
+            ps.executeUpdate();
+
+            PreparedStatement upd = con.prepareStatement(
+                "UPDATE books SET available=false WHERE id=?"
+            );
+
+            upd.setInt(1, bookId);
+            upd.executeUpdate();
+
+            searchBook();
+
+            JOptionPane.showMessageDialog(this, "Issued!");
+
+        } else {
+
+            JOptionPane.showMessageDialog(this, "Not available!");
+        }
+
+    } catch (Exception e) {
+
+        JOptionPane.showMessageDialog(this, e.getMessage());
     }
+}
 
     // ===== RETURN =====
     void returnBook() {
